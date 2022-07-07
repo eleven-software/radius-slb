@@ -202,7 +202,7 @@ namespace SimplestLoadBalancer
             }
 
             // task to remove backends and clients we haven't heard from in a while
-            async Task purge()
+            async Task prune()
             {
                 await Task.Delay(100);
                 var remove_backends = backends.Where(kv => kv.Value.seen < DateTime.Now.AddSeconds(-targetTimeout)).Select(kv => kv.Key).ToArray();
@@ -243,7 +243,7 @@ namespace SimplestLoadBalancer
                 run(relay, "Relay"),
                 run(reply, "Reply"),
                 run(admin, "Admin"),
-                run(purge, "Purge"),
+                run(prune, "Prune"),
                 run(stats, "State")
             };
             await Task.WhenAll(tasks);
