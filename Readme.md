@@ -1,6 +1,6 @@
 # RADIUS SLB #
 
-This fork adds session-like load balancing of RADIUS traffic to SLB using the Calling-Station-Id attribute as the session key. 
+This fork adds session-like load balancing of RADIUS traffic to SLB using RADIUS attribute values to form the session key. 
 
 ![bar](udp-slb.jpg)
 
