@@ -214,6 +214,7 @@ namespace SimplestLoadBalancer
                 foreach (var c in remove_clients)
                 {
                     clients.TryRemove(c, out var info);
+                    info.internal_client.Dispose();
                     await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Expired client {c} (last seen {info.seen:s}).");
                 }
                 var remove_expired_stations = stations.Where(kv => kv.Value.seen < DateTime.Now.AddSeconds(-clientTimeout)).Select(kv => kv.Key).ToArray();
