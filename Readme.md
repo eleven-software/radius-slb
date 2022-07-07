@@ -18,14 +18,7 @@ This is a very simple .Net Core 6 project, so to build (assuming you have the SD
 dotnet build
 ```
 
-## Usage ##
-Likewise, it's simple to run using `dotnet run` in the project directory:
-
-```
-$ dotnet run
-```
-
-If you'd like to generate a single-file executable, which is convenient just target the platform you'll be running on. For Linux:
+If you'd like to generate a single-file executable for ease of use and deployment, just target the platform you'll be running on. For Linux:
 
 ```
 dotnet publish -o ./ -c Release -r linux-x64 /p:PublishSingleFile=true /p:PublishTrimmed=true --self-contained
@@ -35,6 +28,19 @@ Or for Windows:
 
 ```
 dotnet publish -o ./ -c Release -r win10-x64 /p:PublishSingleFile=true /p:PublishTrimmed=true --self-contained
+```
+
+## Usage ##
+In a development environment, run using `dotnet run` in the project directory:
+
+```
+$ dotnet run
+```
+
+If you've built a single-file executable, run with the name of that file:
+
+```
+$ ./SimplestLoadBalancer
 ```
 
 By default the process will listen on port `1812` for any incomming UDP packets.  You can control the ports it listens on with the `--server-port-range` option.  Other options are described in the command help:
