@@ -136,7 +136,7 @@ namespace SimplestLoadBalancer
             // task to listen on the server port and relay packets to random backends via a client-specific internal port
             async Task relay()
             {
-                long temp = received;
+                var any = false;
                 await foreach(var (request, port) in requests()) {
                     Interlocked.Increment(ref received);
 
@@ -144,8 +144,9 @@ namespace SimplestLoadBalancer
                     var station = get_station(request.Buffer);
                     var session = backends.Any() ? stations.AddOrUpdate($"{station.called}-{station.calling}-{port}", csid => (new IPEndPoint(backends.Random(), port), DateTime.Now), (csid, s) => (s.backend, DateTime.Now)) : (null, DateTime.Now);
                     session.backend?.SendVia(client.internal_client, request.Buffer, s => Interlocked.Increment(ref relayed));
+                    any = true;
                 }
-                if (temp == received) await Task.Delay(10); // slack the loop
+                if (any) await Task.Delay(10); // slack the loop
             }
 
             // helper to get replies asyncronously
@@ -165,7 +166,7 @@ namespace SimplestLoadBalancer
                     servers[port].BeginSend(result.Buffer, result.Buffer.Length, ep, s => Interlocked.Increment(ref responded), null);
                     any = true;
                 }
-                if (!any) await Task.Delay(10);
+                if (!any) await Task.Delay(10); // slack the loop
             }
 
             // task to listen for instances asking to add/remove themselves as a target (watch-dog pattern)
