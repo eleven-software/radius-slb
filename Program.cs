@@ -182,13 +182,15 @@ namespace SimplestLoadBalancer
                     var ip = new IPAddress(payload.Slice(2).Slice(0, 4));
                     if (ip.Equals(IPAddress.Any)) ip = packet.RemoteEndPoint.Address;
                     var weight = payload.Count > 8 ? payload[8] : defaultTargetWeight;
-                    if (weight > 0 && (unwise || IPNetwork.IsIANAReserved(ip)))
+                    if (unwise || IPNetwork.IsIANAReserved(ip))
                     {
                         switch (BitConverter.ToInt16(header))
                         {
                             case 0x1111:
-                                backends.AddOrUpdate(ip, ip => (weight, DateTime.Now), (ep, d) => (weight, DateTime.Now));
-                                await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Refresh {ip} (weight {weight}).");
+                                if (weight > 0) {
+                                    backends.AddOrUpdate(ip, ip => (weight, DateTime.Now), (ep, d) => (weight, DateTime.Now));
+                                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Refresh {ip} (weight {weight}).");
+                                } else await Console.Out.WriteLineAsync($"{DateTime.Now}: Rejected zero-weighted {ip}.");
                                 break;
                             case 0x1186: // see AIEE No. 26
                                 backends.Remove(ip, out var seen);
@@ -196,7 +198,7 @@ namespace SimplestLoadBalancer
                                 break;
                         }
                     }
-                    else await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Rejected {ip} (weight {weight}).");
+                    else await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Rejected {ip}.");
                 }
                 else await Task.Delay(10);
             }
