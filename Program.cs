@@ -64,20 +64,20 @@ namespace SimplestLoadBalancer
                 _ => throw new Exception($"Invalid server port range: {serverPortRange}.")
             };
 
-            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Welcome to the simplest UDP Load Balancer.  Hit Ctrl-C to Stop.");
+            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Welcome to the simplest UDP Load Balancer.  Hit Ctrl-C to Stop.");
 
             var admin_ip = NetworkInterface.GetAllNetworkInterfaces().Private().First();
-            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: The server port range is {serverPortRange} ({ports.Length} port{(ports.Length > 1 ? "s" : "")}).");
-            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: The watchdog endpoint is {admin_ip}:{adminPort}.");
-            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Timeouts are: {clientTimeout}s for clients, and {targetTimeout}s  for targets.");
-            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: {(unwise ? "*WARNING* " : string.Empty)}"
+            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: The server port range is {serverPortRange} ({ports.Length} port{(ports.Length > 1 ? "s" : "")}).");
+            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: The watchdog endpoint is {admin_ip}:{adminPort}.");
+            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Timeouts are: {clientTimeout}s for clients, and {targetTimeout}s  for targets.");
+            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: {(unwise ? "*WARNING* " : string.Empty)}"
                 + $"Targets with public IPs {(unwise ? "WILL BE" : "will NOT be")} allowed.");
 
             using var cts = new CancellationTokenSource();
 
             Console.CancelKeyPress += (s, a) =>
             {
-                Console.Out.WriteLine($"{DateTime.Now:s}: Beginning shutdown procedure.");
+                Console.Out.WriteLine($"{DateTime.UtcNow:s}: Beginning shutdown procedure.");
                 cts.Cancel();
                 a.Cancel = true;
             };
@@ -96,11 +96,11 @@ namespace SimplestLoadBalancer
                         }
                         catch (Exception e)
                         {
-                            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: *ERROR* Task {name} encountered a problem: {e.Message}");
+                            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: *ERROR* Task {name} encountered a problem: {e.Message}");
                             await Task.Delay(100); // slow fail
                         }
                     }
-                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: {name} is done.");
+                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: {name} is done.");
                 });
             }
 
@@ -140,9 +140,9 @@ namespace SimplestLoadBalancer
                 await foreach(var (request, port) in requests()) {
                     Interlocked.Increment(ref received);
 
-                    var client = clients.AddOrUpdate((request.RemoteEndPoint, port), ep => (new UdpClient().Configure(), DateTime.Now), (ep, c) => (c.internal_client, DateTime.Now));
+                    var client = clients.AddOrUpdate((request.RemoteEndPoint, port), ep => (new UdpClient().Configure(), DateTime.UtcNow), (ep, c) => (c.internal_client, DateTime.UtcNow));
                     var station = get_station(request.Buffer);
-                    var session = backends.Any() ? stations.AddOrUpdate($"{station.called}-{station.calling}-{port}", csid => (new IPEndPoint(backends.Random(), port), DateTime.Now), (csid, s) => (s.backend, DateTime.Now)) : (null, DateTime.Now);
+                    var session = backends.Any() ? stations.AddOrUpdate($"{station.called}-{station.calling}-{port}", csid => (new IPEndPoint(backends.Random(), port), DateTime.UtcNow), (csid, s) => (s.backend, DateTime.UtcNow)) : (null, DateTime.UtcNow);
                     session.backend?.SendVia(client.internal_client, request.Buffer, s => Interlocked.Increment(ref relayed));
                     any = true;
                 }
@@ -188,17 +188,17 @@ namespace SimplestLoadBalancer
                         {
                             case 0x1111:
                                 if (weight > 0) {
-                                    backends.AddOrUpdate(ip, ip => (weight, DateTime.Now), (ep, d) => (weight, DateTime.Now));
-                                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Refresh {ip} (weight {weight}).");
-                                } else await Console.Out.WriteLineAsync($"{DateTime.Now}: Rejected zero-weighted {ip}.");
+                                    backends.AddOrUpdate(ip, ip => (weight, DateTime.UtcNow), (ep, d) => (weight, DateTime.UtcNow));
+                                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Refresh {ip} (weight {weight}).");
+                                } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow}: Rejected zero-weighted {ip}.");
                                 break;
                             case 0x1186: // see AIEE No. 26
                                 backends.Remove(ip, out var seen);
-                                await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Remove {ip}.");
+                                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Remove {ip}.");
                                 break;
                         }
                     }
-                    else await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Rejected {ip}.");
+                    else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Rejected {ip}.");
                 }
                 else await Task.Delay(10);
             }
@@ -207,37 +207,37 @@ namespace SimplestLoadBalancer
             async Task prune()
             {
                 await Task.Delay(100);
-                var remove_backends = backends.Where(kv => kv.Value.seen < DateTime.Now.AddSeconds(-targetTimeout)).Select(kv => kv.Key).ToArray();
+                var remove_backends = backends.Where(kv => kv.Value.seen < DateTime.UtcNow.AddSeconds(-targetTimeout)).Select(kv => kv.Key).ToArray();
                 foreach (var b in remove_backends)
                 {
                     backends.TryRemove(b, out var seen);
-                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Expired target {b} (last seen {seen:s}).");
+                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired target {b} (last seen {seen:s}).");
                 }
-                var remove_clients = clients.Where(kv => kv.Value.seen < DateTime.Now.AddSeconds(-clientTimeout)).Select(kv => kv.Key).ToArray();
+                var remove_clients = clients.Where(kv => kv.Value.seen < DateTime.UtcNow.AddSeconds(-clientTimeout)).Select(kv => kv.Key).ToArray();
                 foreach (var c in remove_clients)
                 {
                     clients.TryRemove(c, out var info);
                     info.internal_client.Dispose();
-                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Expired client {c} (last seen {info.seen:s}).");
+                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired client {c} (last seen {info.seen:s}).");
                 }
-                var remove_expired_stations = stations.Where(kv => kv.Value.seen < DateTime.Now.AddSeconds(-clientTimeout)).Select(kv => kv.Key).ToArray();
+                var remove_expired_stations = stations.Where(kv => kv.Value.seen < DateTime.UtcNow.AddSeconds(-clientTimeout)).Select(kv => kv.Key).ToArray();
                 foreach (var s in remove_expired_stations)
                 {
                     stations.TryRemove(s, out var info);
-                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Expired station {s} (last seen {info.seen:s}).");
+                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired station {s} (last seen {info.seen:s}).");
                 }
                 var remove_orphaned_stations = stations.Where(kv => !backends.ContainsKey(kv.Value.backend.Address)).Select(kv => kv.Key).ToArray();
                 foreach (var s in remove_orphaned_stations)
                 {
                     stations.TryRemove(s, out var info);
-                    await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Orphaned station {s} (last seen {info.seen:s}).");
+                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Orphaned station {s} (last seen {info.seen:s}).");
                 }
             }
 
             // task to occassionally write statistics to the console
             async Task stats()
             {
-                await Console.Out.WriteLineAsync($"{DateTime.Now:s}: {received}/{relayed}/{responded}, {clients.Count} => {backends.Count}");
+                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: {received}/{relayed}/{responded}, {clients.Count} => {backends.Count}");
                 await Task.Delay(500);
             }
 
@@ -250,7 +250,7 @@ namespace SimplestLoadBalancer
             };
             await Task.WhenAll(tasks);
             var e = string.Join(", ", tasks.Where(t => t.Exception != null).Select(t => t.Exception.Message));
-            await Console.Out.WriteLineAsync($"{DateTime.Now:s}: Bye-now ({(e.Any() ? e : "OK")}).");
+            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Bye-now ({(e.Any() ? e : "OK")}).");
         }
     }
 }
