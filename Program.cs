@@ -56,7 +56,8 @@ namespace SimplestLoadBalancer
         /// <param name="targetTimeout">Seconds to allow before removing target missing watchdog events (default 30)</param>
         /// <param name="defaultTargetWeight">Weight to apply to targets when not specified (default 100)</param>
         /// <param name="unwise">Allows public IP addresses for targets (default is to only allow private IPs)</param>
-        static async Task Main(string serverPortRange = "1812-1813", int adminPort = 1111, uint clientTimeout = 30, uint targetTimeout = 30, byte defaultTargetWeight = 100, bool unwise = false)
+        /// <param name="statsPeriodMs">Sets the number of milliseconds between statistics messages printed to the console (default 500, disable 0, max 65535)</param>
+        static async Task Main(string serverPortRange = "1812-1813", int adminPort = 1111, uint clientTimeout = 30, uint targetTimeout = 30, byte defaultTargetWeight = 100, bool unwise = false, ushort statsPeriodMs = 500)
         {
             var ports = serverPortRange.Split("-", StringSplitOptions.RemoveEmptyEntries) switch {
                 string[] a when a.Length == 1 => new[] { int.Parse(a[0]) },
@@ -238,16 +239,19 @@ namespace SimplestLoadBalancer
             async Task stats()
             {
                 await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: {received}/{relayed}/{responded}, {clients.Count} => {backends.Count}");
-                await Task.Delay(500);
+                await Task.Delay(statsPeriodMs);
             }
 
             var tasks = new[] {
                 run(relay, "Relay"),
                 run(reply, "Reply"),
                 run(admin, "Admin"),
-                run(prune, "Prune"),
-                run(stats, "State")
-            };
+                run(prune, "Prune")
+            }.ToList();
+
+            if (statsPeriodMs > 0) 
+                tasks.Add(run(stats, "State"));
+
             await Task.WhenAll(tasks);
             var e = string.Join(", ", tasks.Where(t => t.Exception != null).Select(t => t.Exception.Message));
             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Bye-now ({(e.Any() ? e : "OK")}).");
