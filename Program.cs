@@ -57,7 +57,8 @@ namespace SimplestLoadBalancer
         /// <param name="defaultTargetWeight">Weight to apply to targets when not specified (default 100)</param>
         /// <param name="unwise">Allows public IP addresses for targets (default is to only allow private IPs)</param>
         /// <param name="statsPeriodMs">Sets the number of milliseconds between statistics messages printed to the console (default 500, disable 0, max 65535)</param>
-        static async Task Main(string serverPortRange = "1812-1813", int adminPort = 1111, uint clientTimeout = 30, uint targetTimeout = 30, byte defaultTargetWeight = 100, bool unwise = false, ushort statsPeriodMs = 500)
+        /// <param name="defaultGroupId">Sets the group ID to assign to backends that when a registration packet doesn't include one, and when port isn't assigned a group (default 0)</param>
+        static async Task Main(string serverPortRange = "1812-1813", int adminPort = 1111, uint clientTimeout = 30, uint targetTimeout = 30, byte defaultTargetWeight = 100, bool unwise = false, ushort statsPeriodMs = 1000, byte defaultGroupId = 0)
         {
             var ports = serverPortRange.Split("-", StringSplitOptions.RemoveEmptyEntries) switch {
                 string[] a when a.Length == 1 => new[] { int.Parse(a[0]) },
@@ -105,7 +106,9 @@ namespace SimplestLoadBalancer
                 });
             }
 
-            var backends = new ConcurrentDictionary<IPAddress, (byte weight, DateTime seen)>();
+            var backend_groups = new ConcurrentDictionary<byte, ConcurrentDictionary<IPAddress, (byte weight, DateTime seen)>>();
+            var port_group_map = new ConcurrentDictionary<int, byte>(ports.ToDictionary(p => p, p => defaultGroupId));
+
             var clients = new ConcurrentDictionary<(IPEndPoint remote, int external_port), (UdpClient internal_client, DateTime seen)>();
             var servers = ports.ToDictionary(p => p, p => new UdpClient(p).Configure());
             var stations = new ConcurrentDictionary<string, (IPEndPoint backend, DateTime seen)>();
@@ -143,8 +146,10 @@ namespace SimplestLoadBalancer
 
                     var client = clients.AddOrUpdate((request.RemoteEndPoint, port), ep => (new UdpClient().Configure(), DateTime.UtcNow), (ep, c) => (c.internal_client, DateTime.UtcNow));
                     var station = get_station(request.Buffer);
-                    var session = backends.Any() ? stations.AddOrUpdate($"{station.called}-{station.calling}-{port}", csid => (new IPEndPoint(backends.Random(), port), DateTime.UtcNow), (csid, s) => (s.backend, DateTime.UtcNow)) : (null, DateTime.UtcNow);
-                    session.backend?.SendVia(client.internal_client, request.Buffer, s => Interlocked.Increment(ref relayed));
+                    if (backend_groups.TryGetValue(port_group_map[port], out var group)) {
+                        var session = group.Any() ? stations.AddOrUpdate($"{station.called}-{station.calling}-{port}", csid => (new IPEndPoint(group.Random(), port), DateTime.UtcNow), (csid, s) => (s.backend, DateTime.UtcNow)) : (null, DateTime.UtcNow);
+                        session.backend?.SendVia(client.internal_client, request.Buffer, s => Interlocked.Increment(ref relayed));
+                    }
                     any = true;
                 }
                 if (any) await Task.Delay(10); // slack the loop
@@ -179,40 +184,64 @@ namespace SimplestLoadBalancer
                     var packet = await control.ReceiveAsync();
                     var payload = new ArraySegment<byte>(packet.Buffer);
 
-                    var header = payload.Slice(0, 2);
-                    var ip = new IPAddress(payload.Slice(2).Slice(0, 4));
-                    if (ip.Equals(IPAddress.Any)) ip = packet.RemoteEndPoint.Address;
-                    var weight = payload.Count > 8 ? payload[8] : defaultTargetWeight;
-                    if (unwise || IPNetwork.IsIANAReserved(ip))
+                    var header = BitConverter.ToInt16(payload.Slice(0, 2));
+
+                    (IPAddress ip, byte weight, byte group_id) get_ip_weight_and_group()
                     {
-                        switch (BitConverter.ToInt16(header))
-                        {
-                            case 0x1111:
-                                if (weight > 0) {
-                                    backends.AddOrUpdate(ip, ip => (weight, DateTime.UtcNow), (ep, d) => (weight, DateTime.UtcNow));
-                                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Refresh {ip} (weight {weight}).");
-                                } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow}: Rejected zero-weighted {ip}.");
-                                break;
-                            case 0x1186: // see AIEE No. 26
-                                backends.Remove(ip, out var seen);
-                                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Remove {ip}.");
-                                break;
-                        }
+                        var ip = new IPAddress(payload.Slice(2, 4));
+                        if (ip.Equals(IPAddress.Any)) ip = packet.RemoteEndPoint.Address;
+                        
+                        var weight = payload.Count > 8 ? payload[8] : defaultTargetWeight;
+                        
+                        var group_id = payload.Count > 9 ? payload[9] : defaultGroupId;
+                        return (ip, weight, group_id);
                     }
-                    else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Rejected {ip}.");
-                }
-                else await Task.Delay(10);
+
+                    switch (header)
+                    {
+                        case 0x1166: {
+                            if (packet.Buffer.Length == 5) {
+                                var port = BitConverter.ToInt16(payload.Slice(2, 2)); // bytes [2] and [3]
+                                var group = payload[4];
+                                port_group_map.AddOrUpdate(port, port => group, (port, group) => group);
+                            } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Invalid port group registration message (length {packet.Buffer.Length} != 5).");
+                        } break;
+                        
+                        case 0x1111: {
+                            (var ip, var weight, var group_id) = get_ip_weight_and_group();
+                            if (unwise || IPNetwork.IsIANAReserved(ip))
+                            {
+                                var group = backend_groups.AddOrUpdate(group_id, id => new(), (id, group) => group);
+                                if (group != null) {
+                                    if (weight > 0) {
+                                        group.AddOrUpdate(ip, ip => (weight, DateTime.UtcNow), (ep, d) => (weight, DateTime.UtcNow));
+                                        await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Refresh {ip} (weight {weight}, group {group_id}).");
+                                    } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow}: Rejected zero-weighted {ip} for group {group_id}.");
+                                } else await Console.Out.WriteLineAsync($"${DateTime.UtcNow:s}: Rejected invalid backend group {group_id} for ip {ip}.");
+                            } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Rejected {ip}.");
+                        } break;
+                        
+                        case 0x1186: {// see AIEE No. 26
+                            (var ip, var weight, var group_id)  = get_ip_weight_and_group();
+                            if (backend_groups.TryGetValue(group_id, out var group))
+                                group.Remove(ip, out var seen);
+                            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Remove {ip} from group {group_id}.");
+                        } break;
+                    }
+                } else await Task.Delay(10);
             }
 
             // task to remove backends and clients we haven't heard from in a while
             async Task prune()
             {
                 await Task.Delay(100);
-                var remove_backends = backends.Where(kv => kv.Value.seen < DateTime.UtcNow.AddSeconds(-targetTimeout)).Select(kv => kv.Key).ToArray();
-                foreach (var b in remove_backends)
-                {
-                    backends.TryRemove(b, out var seen);
-                    await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired target {b} (last seen {seen:s}).");
+                foreach(var backends in backend_groups.Values) {
+                    var remove_backends = backends.Where(kv => kv.Value.seen < DateTime.UtcNow.AddSeconds(-targetTimeout)).Select(kv => kv.Key).ToArray();
+                    foreach (var b in remove_backends)
+                    {
+                        backends.TryRemove(b, out var seen);
+                        await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired target {b} (last seen {seen:s}).");
+                    }
                 }
                 var remove_clients = clients.Where(kv => kv.Value.seen < DateTime.UtcNow.AddSeconds(-clientTimeout)).Select(kv => kv.Key).ToArray();
                 foreach (var c in remove_clients)
@@ -227,7 +256,7 @@ namespace SimplestLoadBalancer
                     stations.TryRemove(s, out var info);
                     await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired station {s} (last seen {info.seen:s}).");
                 }
-                var remove_orphaned_stations = stations.Where(kv => !backends.ContainsKey(kv.Value.backend.Address)).Select(kv => kv.Key).ToArray();
+                var remove_orphaned_stations = stations.Where(kv => ! backend_groups[port_group_map[kv.Value.backend.Port]].ContainsKey(kv.Value.backend.Address)).Select(kv => kv.Key).ToArray();
                 foreach (var s in remove_orphaned_stations)
                 {
                     stations.TryRemove(s, out var info);
@@ -238,8 +267,8 @@ namespace SimplestLoadBalancer
             // task to occassionally write statistics to the console
             async Task stats()
             {
-                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: {received}/{relayed}/{responded}, {clients.Count} => {backends.Count}");
-                await Task.Delay(statsPeriodMs);
+                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: {received}/{relayed}/{responded}, {clients.Count} => {backend_groups.Count}/{backend_groups.Sum(g => g.Value.Count)}({backend_groups.Values.SelectMany(g => g).Distinct().Count()})");
+                try { await Task.Delay(statsPeriodMs, cts.Token); } catch { } // supress cancel
             }
 
             var tasks = new[] {
