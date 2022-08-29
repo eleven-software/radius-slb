@@ -116,7 +116,7 @@ namespace SimplestLoadBalancer
             // helper to extract the Calling-Station-Id from a RADIUS packet
             (string called, string calling) get_station(Memory<byte> buffer) {
                 string called = "unknown", calling = "unknown";
-                if (buffer.Length > 22) { 
+                if (buffer.Length > 22) {
                     buffer = buffer.Slice(20);
                     while (buffer.Length > 0 && buffer.Length >= buffer.Span[1]) {
                         switch (buffer.Span[0]) { 
@@ -204,6 +204,7 @@ namespace SimplestLoadBalancer
                                 var port = BitConverter.ToInt16(payload.Slice(2, 2)); // bytes [2] and [3]
                                 var group = payload[4];
                                 port_group_map.AddOrUpdate(port, port => group, (port, group) => group);
+                                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Mapped port {port} to group {group}.");
                             } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Invalid port group registration message (length {packet.Buffer.Length} != 5).");
                         } break;
                         
@@ -256,7 +257,9 @@ namespace SimplestLoadBalancer
                     stations.TryRemove(s, out var info);
                     await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Expired station {s} (last seen {info.seen:s}).");
                 }
-                var remove_orphaned_stations = stations.Where(kv => ! backend_groups[port_group_map[kv.Value.backend.Port]].ContainsKey(kv.Value.backend.Address)).Select(kv => kv.Key).ToArray();
+                var remove_orphaned_stations = stations
+                    .Where(kv => true != (port_group_map.TryGetValue(kv.Value.backend.Port, out var gid) && backend_groups.TryGetValue(gid, out var g) && g.ContainsKey(kv.Value.backend.Address)))
+                    .Select(kv => kv.Key).ToArray();
                 foreach (var s in remove_orphaned_stations)
                 {
                     stations.TryRemove(s, out var info);
