@@ -184,32 +184,33 @@ namespace SimplestLoadBalancer
                     var packet = await control.ReceiveAsync();
                     var payload = new ArraySegment<byte>(packet.Buffer);
 
-                    var header = BitConverter.ToInt16(payload.Slice(0, 2));
+                    (IPAddress ip, byte weight, byte group_id) get_ip_weight_and_group(ArraySegment<byte> command) =>
+                        command switch { 
+                            [ _, _, _, _, .. var options] => ( // four bytes for ip, then options
+                                ip: command switch {
+                                    [ 0, 0, 0, 0, ..] => packet.RemoteEndPoint.Address,
+                                    _ => new IPAddress(command.Slice(0, 4))
+                                }, 
+                                weight: options switch { [ var weight, ..] => weight, _ => defaultTargetWeight },
+                                group_id: options switch { [ _, var group, ..] => group, _ => defaultGroupId }
+                            ),
+                            [.. var options] => ( // less than four bytes, just options
+                                ip: packet.RemoteEndPoint.Address, 
+                                weight: options switch { [ var weight, ..] => weight, _ => defaultTargetWeight },
+                                group_id: options switch { [ _, var group, ..] => group, _ => defaultGroupId }
+                            )
+                        };
 
-                    (IPAddress ip, byte weight, byte group_id) get_ip_weight_and_group()
+                    switch (payload)
                     {
-                        var ip = new IPAddress(payload.Slice(2, 4));
-                        if (ip.Equals(IPAddress.Any)) ip = packet.RemoteEndPoint.Address;
-                        
-                        var weight = payload.Count > 8 ? payload[8] : defaultTargetWeight;
-                        
-                        var group_id = payload.Count > 9 ? payload[9] : defaultGroupId;
-                        return (ip, weight, group_id);
-                    }
-
-                    switch (header)
-                    {
-                        case 0x1166: {
-                            if (packet.Buffer.Length == 5) {
-                                var port = BitConverter.ToInt16(payload.Slice(2, 2)); // bytes [2] and [3]
-                                var group = payload[4];
-                                port_group_map.AddOrUpdate(port, port => group, (port, group) => group);
-                                await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Mapped port {port} to group {group}.");
-                            } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Invalid port group registration message (length {packet.Buffer.Length} != 5).");
+                        case [ 0x66, 0x11, var port_low, var port_high, var group ]: {
+                            var port = port_low + port_high << 8;
+                            port_group_map.AddOrUpdate(port, port => group, (port, group) => group);
+                            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Mapped port {port} to group {group}.");
                         } break;
                         
-                        case 0x1111: {
-                            (var ip, var weight, var group_id) = get_ip_weight_and_group();
+                        case [ 0x11, 0x11, .. var command ]: {
+                            (var ip, var weight, var group_id) = get_ip_weight_and_group(command);
                             if (unwise || IPNetwork.IsIANAReserved(ip))
                             {
                                 var group = backend_groups.AddOrUpdate(group_id, id => new(), (id, group) => group);
@@ -222,8 +223,8 @@ namespace SimplestLoadBalancer
                             } else await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Rejected {ip}.");
                         } break;
                         
-                        case 0x1186: {// see AIEE No. 26
-                            (var ip, var weight, var group_id)  = get_ip_weight_and_group();
+                        case [ 0x86, 0x11, .. var command ]: {// see AIEE No. 26
+                            (var ip, var weight, var group_id)  = get_ip_weight_and_group(command);
                             if (backend_groups.TryGetValue(group_id, out var group))
                                 group.Remove(ip, out var seen);
                             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Remove {ip} from group {group_id}.");
