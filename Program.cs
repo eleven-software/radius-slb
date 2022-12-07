@@ -204,7 +204,7 @@ namespace SimplestLoadBalancer
                     switch (payload)
                     {
                         case [ 0x66, 0x11, var port_low, var port_high, var group ]: {
-                            var port = port_low + port_high << 8;
+                            var port = port_low + (port_high << 8);
                             port_group_map.AddOrUpdate(port, port => group, (port, group) => group);
                             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Mapped port {port} to group {group}.");
                         } break;
