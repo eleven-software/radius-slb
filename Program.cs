@@ -52,13 +52,14 @@ namespace SimplestLoadBalancer
         /// </summary>
         /// <param name="serverPortRange">Set the ports to listen to and forward to backend targets (default "1812-1813")</param>
         /// <param name="adminPort">Set the port that targets will send watchdog events (default 1111)</param>
+        /// <param name="adminAddr">Set the admin host to listen for admin messages (default 127.0.0.1)</param>
         /// <param name="clientTimeout">Seconds to allow before cleaning-up idle clients (default 30)</param>
         /// <param name="targetTimeout">Seconds to allow before removing target missing watchdog events (default 30)</param>
         /// <param name="defaultTargetWeight">Weight to apply to targets when not specified (default 100)</param>
         /// <param name="unwise">Allows public IP addresses for targets (default is to only allow private IPs)</param>
         /// <param name="statsPeriodMs">Sets the number of milliseconds between statistics messages printed to the console (default 500, disable 0, max 65535)</param>
         /// <param name="defaultGroupId">Sets the group ID to assign to backends that when a registration packet doesn't include one, and when port isn't assigned a group (default 0)</param>
-        static async Task Main(string serverPortRange = "1812-1813", int adminPort = 1111, uint clientTimeout = 30, uint targetTimeout = 30, byte defaultTargetWeight = 100, bool unwise = false, ushort statsPeriodMs = 1000, byte defaultGroupId = 0)
+        static async Task Main(string serverPortRange = "1812-1813", int adminPort = 1111, string adminAddr="127.0.0.1", uint clientTimeout = 30, uint targetTimeout = 30, byte defaultTargetWeight = 100, bool unwise = false, ushort statsPeriodMs = 1000, byte defaultGroupId = 0)
         {
             var ports = serverPortRange.Split("-", StringSplitOptions.RemoveEmptyEntries) switch {
                 string[] a when a.Length == 1 => new[] { int.Parse(a[0]) },
@@ -68,7 +69,7 @@ namespace SimplestLoadBalancer
 
             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Welcome to the simplest UDP Load Balancer.  Hit Ctrl-C to Stop.");
 
-            var admin_ip = NetworkInterface.GetAllNetworkInterfaces().Private().First();
+            var admin_ip = IPAddress.Parse(adminAddr);;
             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: The server port range is {serverPortRange} ({ports.Length} port{(ports.Length > 1 ? "s" : "")}).");
             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: The watchdog endpoint is {admin_ip}:{adminPort}.");
             await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Timeouts are: {clientTimeout}s for clients, and {targetTimeout}s  for targets.");
@@ -144,11 +145,33 @@ namespace SimplestLoadBalancer
                 await foreach(var (request, port) in requests()) {
                     Interlocked.Increment(ref received);
 
-                    var client = clients.AddOrUpdate((request.RemoteEndPoint, port), ep => (new UdpClient().Configure(), DateTime.UtcNow), (ep, c) => (c.internal_client, DateTime.UtcNow));
+                    var client = clients.AddOrUpdate(
+                        (request.RemoteEndPoint, port),
+                        ep => (new UdpClient().Configure(), DateTime.UtcNow),
+                        (ep, c) => (c.internal_client, DateTime.UtcNow)
+                    );
+
+
                     var station = get_station(request.Buffer);
+
+
+
+
                     if (backend_groups.TryGetValue(port_group_map[port], out var group)) {
-                        var session = group.Any() ? stations.AddOrUpdate($"{station.called}-{station.calling}-{port}", csid => (new IPEndPoint(group.Random(), port), DateTime.UtcNow), (csid, s) => (s.backend, DateTime.UtcNow)) : (null, DateTime.UtcNow);
+                        var session = group.Any() ? stations.AddOrUpdate(
+                            $"{station.called}-{station.calling}-{port}",
+                            csid => (new IPEndPoint(group.Random(), port), DateTime.UtcNow),
+                            (csid, s) => (s.backend, DateTime.UtcNow)
+                        ) : (null, DateTime.UtcNow);
+
+
+
                         session.backend?.SendVia(client.internal_client, request.Buffer, s => Interlocked.Increment(ref relayed));
+
+                        await Console.Out.WriteAsync($"{DateTime.Now:s}: External packet ({request.Buffer.Length} bytes) from {request.RemoteEndPoint} to listening port {port} sent to backend {session.backend}.");
+
+                    } else {
+                        await Console.Out.WriteAsync($"Group for port {port:n} not found");
                     }
                     any = true;
                 }
@@ -171,6 +194,7 @@ namespace SimplestLoadBalancer
                 {
                     servers[port].BeginSend(result.Buffer, result.Buffer.Length, ep, s => Interlocked.Increment(ref responded), null);
                     any = true;
+                    await Console.Out.WriteAsync($"{DateTime.Now:s}: Backend packet ({result.Buffer.Length} bytes) from {result.RemoteEndPoint} to SLB port {port} reply sent to external {servers[port].Client.RemoteEndPoint}.");
                 }
                 if (!any) await Task.Delay(10); // slack the loop
             }
@@ -186,27 +210,42 @@ namespace SimplestLoadBalancer
 
                     (IPAddress ip, byte weight, byte group_id) get_ip_weight_and_group(ArraySegment<byte> command) =>
                         command switch { 
-                            [ _, _, _, _, .. var options] => ( // four bytes for ip, then options
-                                ip: command switch {
-                                    [ 0, 0, 0, 0, ..] => packet.RemoteEndPoint.Address,
-                                    _ => new IPAddress(command.Slice(0, 4))
-                                }, 
-                                weight: options switch { [ var weight, ..] => weight, _ => defaultTargetWeight },
-                                group_id: options switch { [ _, var group, ..] => group, _ => defaultGroupId }
-                            ),
-                            [.. var options] => ( // less than four bytes, just options
-                                ip: packet.RemoteEndPoint.Address, 
-                                weight: options switch { [ var weight, ..] => weight, _ => defaultTargetWeight },
-                                group_id: options switch { [ _, var group, ..] => group, _ => defaultGroupId }
-                            )
-                        };
+                        [ _, _, _, _, .. var options] => ( // four bytes for ip, then options
+                            ip: command switch {
+                                [ 0, 0, 0, 0, ..] => packet.RemoteEndPoint.Address, // this case for command when first 4 bytes equal 0
+                                _ => new IPAddress(command.Slice(0, 4)) // in other cases take the first 4 bytes as valid address
+                            },
+                            weight: options switch {
+                                [ var weight, ..] => weight,
+                                 _ => defaultTargetWeight
+                            },
+                            group_id: options switch {
+                                [ _, var group, ..] => group,
+                                _ => defaultGroupId
+                            }
+                        )
+                    };
+
+
+
+                    await Console.Out.WriteLineAsync(BitConverter.ToString(payload.ToArray()));
 
                     switch (payload)
                     {
-                        case [ 0x66, 0x11, var port_low, var port_high, var group ]: {
-                            var port = port_low + port_high << 8;
-                            port_group_map.AddOrUpdate(port, port => group, (port, group) => group);
-                            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Mapped port {port} to group {group}.");
+                        case [ 0x66, 0x11, var port_low, var port_high, var group_id ]: {
+                            var port = port_low + (port_high << 8);
+
+
+
+                            port_group_map.AddOrUpdate(port, key => group_id, (key, val) => group_id);
+
+                            foreach(var item in port_group_map)
+                            {
+                                 Console.WriteLine(item.Key + "-" + item.Value);
+                            }
+
+
+                            await Console.Out.WriteLineAsync($"{DateTime.UtcNow:s}: Mapped port {port} to group {group_id}.");
                         } break;
                         
                         case [ 0x11, 0x11, .. var command ]: {
